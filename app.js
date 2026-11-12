@@ -44,7 +44,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 function parseCurrency(val) {
   if (typeof val === "number") return val;
   if (!val) return 0;
-  // Handles Indonesian formatting e.g. 82.423.291,50
   const cleaned = String(val)
     .replace(/\./g, "")
     .replace(",", ".")
@@ -52,14 +51,11 @@ function parseCurrency(val) {
   return parseFloat(cleaned) || 0;
 }
 
-function formatCurrency(num, symbol) {
-  return (
-    symbol +
-    num.toLocaleString("id-ID", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })
-  );
+function formatNumberOnly(num) {
+  return num.toLocaleString("id-ID", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 function formatDate(dateVal) {
@@ -79,8 +75,10 @@ function renderView() {
   const container = document.getElementById("dashboard-container");
   const countBadge = document.getElementById("record-count");
   const searchInput = document.getElementById("search-input");
+  const viewSelect = document.getElementById("view-mode-select");
 
   const query = searchInput ? searchInput.value.toLowerCase().trim() : "";
+  const mode = viewSelect ? viewSelect.value : "bl"; // 'bl' | 'cnee' | 'invoice'
 
   // Filter rows based on search
   const filtered = rawRecords.filter((row) => {
@@ -90,15 +88,22 @@ function renderView() {
     return bl.includes(query) || cnee.includes(query) || inv.includes(query);
   });
 
-  // Group records by BL to keep financial math accurate
-  const blGroups = {};
+  // Dynamic Grouping based on View Mode selector
+  const groups = {};
   filtered.forEach((row) => {
-    const blKey = row[cols.bl];
-    if (!blKey) return;
+    let groupKey = "";
+    if (mode === "cnee") {
+      groupKey = row[cols.cnee] || "UNKNOWN_CNEE";
+    } else if (mode === "invoice") {
+      groupKey = row[cols.invoiceNo] || "UNKNOWN_INV";
+    } else {
+      groupKey = row[cols.bl] || "UNKNOWN_BL";
+    }
 
-    if (!blGroups[blKey]) {
-      blGroups[blKey] = {
-        bl: blKey,
+    if (!groups[groupKey]) {
+      groups[groupKey] = {
+        key: groupKey,
+        bl: row[cols.bl] || "",
         cnee: row[cols.cnee] || "",
         date: row[cols.date] || "",
         vesVoy: row[cols.vesVoy] || "",
@@ -110,39 +115,39 @@ function renderView() {
       };
     }
 
-    if (!blGroups[blKey].cnee && row[cols.cnee])
-      blGroups[blKey].cnee = row[cols.cnee];
-    if (!blGroups[blKey].estTransfer && row[cols.estTransfer])
-      blGroups[blKey].estTransfer = row[cols.estTransfer];
-    if (!blGroups[blKey].send && row[cols.send])
-      blGroups[blKey].send = row[cols.send];
-
     const invAmt = parseCurrency(row[cols.invoiceAmount]);
     const pphAmt = parseCurrency(row[cols.pph23]);
 
-    blGroups[blKey].totalGross += invAmt;
-    if (pphAmt !== 0) blGroups[blKey].pph23 = Math.abs(pphAmt);
+    groups[groupKey].totalGross += invAmt;
+    if (pphAmt !== 0) groups[groupKey].pph23 = Math.abs(pphAmt);
 
-    blGroups[blKey].items.push({
+    groups[groupKey].items.push({
       type: row[cols.type] || "INV",
       invoiceNo: row[cols.invoiceNo] || "-",
       amount: invAmt,
     });
   });
 
-  const groupList = Object.values(blGroups);
-  if (countBadge) countBadge.textContent = `${groupList.length} BL Group(s)`;
+  const groupList = Object.values(groups);
+  const modeLabels = {
+    bl: "BL Group(s)",
+    cnee: "Consignee Group(s)",
+    invoice: "Invoice View",
+  };
+  if (countBadge)
+    countBadge.textContent = `${groupList.length} ${modeLabels[mode] || "Group(s)"}`;
 
   if (groupList.length === 0) {
     container.innerHTML = `<div class="bg-white p-8 rounded-xl border border-slate-200 text-center text-slate-500">No matching records found.</div>`;
     return;
   }
 
-  // Render cards (grouped by BL)
+  // Render cards using tables for immaculate grid/currency alignment
   container.innerHTML = groupList
     .map((group) => {
       const finalOutstanding = group.totalGross - group.pph23;
       const hasPph = group.pph23 > 0;
+      const symbol = cfg.ui.currencySymbol;
 
       return `
       <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-4">
@@ -150,7 +155,7 @@ function renderView() {
         <div class="bg-slate-50 px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row justify-between gap-4">
           <div>
             <div class="flex items-center gap-2">
-              <span class="text-xs font-bold uppercase tracking-wider bg-blue-100 text-blue-800 px-2.5 py-0.5 rounded">${group.bl}</span>
+              <span class="text-xs font-bold uppercase tracking-wider bg-blue-100 text-blue-800 px-2.5 py-0.5 rounded">BL: ${group.bl || group.key}</span>
               <span class="font-bold text-slate-800">${group.cnee || "No Consignee"}</span>
             </div>
             <div class="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-4 gap-y-1">
@@ -161,37 +166,56 @@ function renderView() {
             </div>
           </div>
 
-          <!-- Financials -->
-          <div class="flex flex-col sm:items-end justify-between gap-2">
-            <div class="text-right">
-              <div class="text-xs text-slate-500">Total: <span class="font-semibold text-slate-700">${formatCurrency(group.totalGross, cfg.ui.currencySymbol)}</span></div>
+          <!-- Financial Summary Table -->
+          <div class="flex flex-col sm:items-end justify-center">
+            <table class="text-xs text-slate-600">
+              <tr>
+                <td class="pr-3 text-right text-slate-500">Total:</td>
+                <td class="w-8 font-mono">${symbol}</td>
+                <td class="text-right font-mono font-semibold text-slate-800">${formatNumberOnly(group.totalGross)}</td>
+              </tr>
               ${
                 hasPph
                   ? `
-                <div class="text-xs text-rose-600">PPH 23: -${formatCurrency(group.pph23, cfg.ui.currencySymbol)}</div>
-                <div class="text-sm font-bold text-slate-900 mt-0.5">Total Outstanding: ${formatCurrency(finalOutstanding, cfg.ui.currencySymbol)}</div>
+              <tr>
+                <td class="pr-3 text-right text-rose-600">PPH 23:</td>
+                <td class="w-8 font-mono text-rose-600">-${symbol}</td>
+                <td class="text-right font-mono text-rose-600">${formatNumberOnly(group.pph23)}</td>
+              </tr>
+              <tr class="border-t border-slate-200 font-bold text-slate-900 text-sm">
+                <td class="pr-3 text-right pt-1">Outstanding:</td>
+                <td class="w-8 font-mono pt-1">${symbol}</td>
+                <td class="text-right font-mono pt-1">${formatNumberOnly(finalOutstanding)}</td>
+              </tr>
               `
                   : ""
               }
-            </div>
+            </table>
           </div>
         </div>
 
-        <!-- Line Items -->
-        <div class="divide-y divide-slate-100">
-          ${group.items
-            .map(
-              (item) => `
-            <div class="px-5 py-2.5 flex justify-between items-center text-sm hover:bg-slate-50/50">
-              <div class="flex items-center gap-3">
-                <span class="text-xs font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-600">${item.type}</span>
-                <span class="font-medium text-slate-700">${item.invoiceNo}</span>
-              </div>
-              <span class="font-mono text-slate-800">${formatCurrency(item.amount, cfg.ui.currencySymbol)}</span>
-            </div>
-          `,
-            )
-            .join("")}
+        <!-- Line Items Table (Clean Column Alignment for RP & Numbers) -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-sm">
+            <tbody class="divide-y divide-slate-100">
+              ${group.items
+                .map(
+                  (item) => `
+                <tr class="hover:bg-slate-50/50 transition-colors">
+                  <td class="py-2.5 px-5 w-32">
+                    <span class="text-xs font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-600">${item.type}</span>
+                  </td>
+                  <td class="py-2.5 px-3 font-medium text-slate-700">
+                    ${item.invoiceNo}
+                  </td>
+                  <td class="py-2.5 px-2 w-12 font-mono text-slate-400 text-right">${symbol}</td>
+                  <td class="py-2.5 px-5 w-40 font-mono text-slate-800 text-right">${formatNumberOnly(item.amount)}</td>
+                </tr>
+              `,
+                )
+                .join("")}
+            </tbody>
+          </table>
         </div>
       </div>
     `;
